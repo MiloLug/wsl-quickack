@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep quickack on WSL's mirrored-networking routes to Windows
+After=network.target
+
+[Service]
+ExecStart=@SBINDIR@/wsl-quickack watch
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

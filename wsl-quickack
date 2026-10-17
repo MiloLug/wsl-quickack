@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Keep `quickack 1` on the routes WSL's mirrored networking uses to reach Windows.
+# Usage: wsl-quickack apply | watch | status
+set -uo pipefail
+
+# Tables `ip rule` sends traffic to besides the kernel's own: in mirrored mode, 127 (localhost
+# to Windows) and 128 (Windows' own addresses).
+tables() {
+  ip "$1" rule show 2>/dev/null \
+    | awk '{ for (i = 1; i < NF; i++) if ($i == "lookup") print $(i + 1) }' \
+    | grep -vxE 'local|main|default' | sort -u
+}
+
+each_route() {
+  local fam t
+  for fam in -4 -6; do
+    for t in $(tables "$fam"); do
+      ip "$fam" route show table "$t" 2>/dev/null | while IFS= read -r route; do
+        [[ -n $route ]] && printf '%s\t%s\t%s\n' "$fam" "$t" "$route"
+      done
+    done
+  done
+}
+
+cmd_apply() {
+  local fam t route
+  while IFS=$'\t' read -r fam t route; do
+    [[ $route == *"quickack 1"* ]] && continue
+    # shellcheck disable=SC2086  # the route's own words, as `ip route show` printed them
+    ip "$fam" route change $route table "$t" quickack 1 && echo "quickack on: table $t: $route"
+  done < <(each_route)
+}
+
+cmd_watch() {
+  cmd_apply
+  # WSL rebuilds its tables on boot and network changes. Each route event triggers a pass; a pass
+  # that changes nothing raises no further events.
+  ip monitor route | while read -r _; do cmd_apply; done
+}
+
+cmd_status() {
+  local fam t route found=0 off=0
+  while IFS=$'\t' read -r fam t route; do
+    found=1
+    if [[ $route == *"quickack 1"* ]]; then
+      echo "on   table $t: $route"
+    else
+      echo "off  table $t: $route"
+      off=1
+    fi
+  done < <(each_route)
+  if (( !found )); then
+    echo "no routes to Windows found (is WSL networkingMode=mirrored?)" >&2
+    return 2
+  fi
+  return $off
+}
+
+case ${1:-} in
+  apply | watch)
+    [[ $EUID -eq 0 ]] || { echo "wsl-quickack $1: needs root" >&2; exit 1; }
+    "cmd_$1" ;;
+  status) cmd_status ;;
+  *) echo "usage: wsl-quickack apply | watch | status" >&2; exit 2 ;;
+esac
